@@ -77,6 +77,23 @@ var ddlStmts = map[tableName]string{
 	// foreign key(s_m_id) references merchant (m_id)
 }
 
+var constraintStmts = map[tableName]string{
+	Product: `
+  alter table product
+  add constraint merchant_fk foreign key (p_m_id) references merchant (m_id);
+  `,
+
+	Variant: `
+  alter table variant
+  add constraint product_fk foreign key (v_m_id, v_p_id) references product (p_m_id, p_id);
+  `,
+
+	Store: `
+  alter table store
+  add constraint merchant_fk foreign key (s_m_id) references merchant (m_id);
+  `,
+}
+
 var insertStmts = map[tableName]string{
 	Merchant: `
   insert into merchant
@@ -120,6 +137,7 @@ var tableTypes = map[tableName][]columnType{
 type interleaveInfo struct {
 	name           tableName
 	interleaveStmt string
+	ancestors      []string
 }
 
 var toInterleave = []interleaveInfo{
@@ -170,6 +188,11 @@ func initDDL() {
 		insertStmts[interleaveName[name]] = stmt
 	}
 
+	// Interleave tables have the same constraint statements.
+	for name, stmt := range constraintStmts {
+		constraintStmts[interleaveName[name]] = stmt
+	}
+
 	tableRows[Merchant] = *nMerchants
 	tableRows[Product] = *nProducts
 	tableRows[Variant] = *nVariants
@@ -194,6 +217,19 @@ func loadSchema(db *sql.DB) error {
 			return errors.Wrap(err, "loading schema failed")
 		}
 	}
+	stderr.Println("Creating tables complete.")
+
+	return nil
+}
+
+func applyConstraints(db *sql.DB) error {
+	stderr.Println("Applying table constraints (i.e. foreign keys)")
+	for _, stmtName := range variantTables[schemaVar] {
+		if _, err := db.Exec(constraintStmts[stmtName]); err != nil {
+			return errors.Wrap(err, "applying constraints failed")
+		}
+	}
+	stderr.Println("Applying constraints complete.")
 
 	return nil
 }

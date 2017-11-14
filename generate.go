@@ -3,10 +3,8 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"math/rand"
-	"os/exec"
 	"strconv"
 	"sync"
 )
@@ -30,24 +28,7 @@ func generateData(db *sql.DB) error {
 
 	wg.Wait()
 
-	// Dump all data to the dumpfile.
-	stderr.Printf("Data insertion done. Dumping to file %s...\n", *dumpfile)
-	var cmd *exec.Cmd
-	if *dbms == "cockroach" {
-		cmd = exec.Command("cockroach", "dump", "--insecure", dbName)
-	} else if *dbms == "postgres" {
-		cmd = exec.Command("pg_dump", dbName)
-	}
-
-	output, err := cmd.Output()
-	if err != nil {
-		return err
-	}
-	if err = ioutil.WriteFile(*dumpfile, output, 0644); err != nil {
-		return err
-	}
-
-	stderr.Printf("Dump to %s complete!\n", *dumpfile)
+	stderr.Println("Data insertion done.")
 
 	return nil
 }
@@ -109,25 +90,17 @@ func (tw *tableWriter) insertData(wg *sync.WaitGroup) {
 
 func (tw *tableWriter) genValues(nTuples int) []byte {
 	values := tw.valuesBuf[:0]
-	commaTuples := false
+	// Generate N tuples of values.
 	for i := 0; i < nTuples; i++ {
-		if commaTuples {
-			values = append(values, ',')
-		}
 		values = append(values, '(')
-		commaValues := false
+		// Generate a tuple of values.
 		for i, c := range tw.columnTypes {
-			if commaValues {
-				values = append(values, ',')
-			}
-
 			var temp []byte
 			switch c {
 			case PkeyInt:
 				temp = []byte(strconv.Itoa(tw.pkey))
-				tw.pkey++
 			case FkeyInt:
-				temp = tw.randFkeyInt(i)
+				temp = tw.fKeyInt(i)
 			case Int:
 				temp = tw.randInt()
 			case Text:
@@ -138,27 +111,46 @@ func (tw *tableWriter) genValues(nTuples int) []byte {
 				panic("undefined column type")
 			}
 			values = append(values, temp...)
-			commaValues = true
+			values = append(values, ',')
 		}
+		tw.pkey++
+
+		// Omit the last comma.
+		values = values[:len(values)-1]
 		values = append(values, ')')
-		commaTuples = true
+		values = append(values, ',')
 	}
-	return values
+
+	// Omit the last comma.
+	return values[:len(values)-1]
 }
 
-func (tw *tableWriter) randFkeyInt(cidx int) []byte {
-	var temp int
+func (tw *tableWriter) fKeyInt(cidx int) []byte {
+	var fkey int
+	// Foreign keys are calculated as follows:
+	// For a given table grandchild with ancestors
+	//    parent
+	//	child
+	// We first map its id to child_id by modding it by nChild (# of child
+	// rows).
+	// Specifically, we take
+	//    child_id = (id - 1) % nChild + 1
+	// This -1, +1 shifting is necessary such that no foreign IDs are 0.
+	// For parent_id, we compute it be chaining the mods
+	//    parent_id = (child_id - 1) % nParent + 1
+	// which reduces to
+	//    parent_id = (id - 1) % nChild % nParent + 1
 	switch tw.table {
 	case Product, ProductInterleaved, Store, StoreInterleaved:
-		// Foreign key (merchant id) must be between 1 and nMerchants.
-		temp = tw.rnd.Intn(*nMerchants) + 1
+		// Foreign key for merchant ID.
+		fkey = (tw.pkey-1)%(*nMerchants) + 1
 	case Variant, VariantInterleaved:
 		if cidx == 0 {
-			// Foreign key (merchant id) must be between 1 and nMerchants.
-			temp = tw.rnd.Intn(*nMerchants) + 1
+			// Foreign key for merchant ID.
+			fkey = (tw.pkey-1)%(*nProducts)%(*nMerchants) + 1
 		} else if cidx == 1 {
-			// Foreign key (product id) must be between 1 and nProducts.
-			temp = tw.rnd.Intn(*nProducts) + 1
+			// Foreign key for product ID.
+			fkey = (tw.pkey-1)%(*nProducts) + 1
 		} else {
 			panic("invalid fkey column index")
 		}
@@ -166,7 +158,7 @@ func (tw *tableWriter) randFkeyInt(cidx int) []byte {
 		panic("unsupported table for fkey generation")
 	}
 
-	return []byte(strconv.Itoa(temp))
+	return []byte(strconv.Itoa(fkey))
 }
 
 func (tw *tableWriter) randInt() []byte {
