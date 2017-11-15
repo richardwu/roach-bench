@@ -12,7 +12,7 @@ import (
 
 const (
 	minLatency = 100 * time.Microsecond
-	maxLatency = 10 * time.Second
+	maxLatency = 100 * time.Second
 )
 
 // numOps keeps a global count of successful operations.
